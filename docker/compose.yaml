@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - SUMMARIZER_BACKEND=textrank
+      - LOG_LEVEL=INFO
+      - UPLOAD_DIR=./uploads
+      - OUTPUT_DIR=./outputs
+      - TEMP_DIR=./temp
+    volumes:
+      - slideforge_uploads:/app/uploads
+      - slideforge_outputs:/app/outputs
+      - slideforge_temp:/app/temp
+      - slideforge_models:/app/models
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  slideforge_uploads:
+  slideforge_outputs:
+  slideforge_temp:
+  slideforge_models:
