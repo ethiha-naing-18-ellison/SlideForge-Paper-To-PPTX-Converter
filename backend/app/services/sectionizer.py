@@ -202,9 +202,15 @@ def extract_metadata_from_text(text: str) -> Dict[str, str]:
     for i, line in enumerate(lines[:10]):
         line = line.strip()
         if line and len(line) > 10 and len(line) < 200:
+            # Check if line contains "Title:" prefix
+            if line.lower().startswith('title:'):
+                title = line[6:].strip()  # Remove "Title:" prefix
+                if title:
+                    metadata['title'] = title
+                    break
             # Simple heuristic: title is usually longer than author names
             # and doesn't contain typical author patterns
-            if not re.search(r'[a-z]\s+[a-z]', line.lower()):  # No lowercase words
+            elif not re.search(r'[a-z]\s+[a-z]', line.lower()):  # No lowercase words
                 metadata['title'] = line
                 break
     
@@ -213,8 +219,14 @@ def extract_metadata_from_text(text: str) -> Dict[str, str]:
     for line in lines[:20]:
         line = line.strip()
         if line and ',' in line and len(line) < 100:
+            # Check if line contains "Authors:" prefix
+            if line.lower().startswith('authors:'):
+                authors_text = line[8:].strip()  # Remove "Authors:" prefix
+                if authors_text:
+                    authors = [author.strip() for author in authors_text.split(',')]
+                    break
             # Simple heuristic for author lines
-            if re.search(r'[A-Z][a-z]+\s+[A-Z]', line):
+            elif re.search(r'[A-Z][a-z]+\s+[A-Z]', line):
                 authors.append(line)
     
     if authors:

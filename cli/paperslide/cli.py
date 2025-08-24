@@ -165,13 +165,31 @@ def _extract_metadata_from_text(text: str) -> PaperMetadata:
     for line in lines[:10]:
         line = line.strip()
         if line and len(line) > 10 and len(line) < 200:
-            if not any(char.isdigit() for char in line):
+            # Check if line contains "Title:" prefix
+            if line.lower().startswith('title:'):
+                title = line[6:].strip()  # Remove "Title:" prefix
+                if title:
+                    break
+            # Simple heuristic: title is usually longer than author names
+            elif not any(char.isdigit() for char in line):
                 title = line
                 break
     
+    # Find authors
+    authors = []
+    for line in lines[:20]:
+        line = line.strip()
+        if line and ',' in line and len(line) < 100:
+            # Check if line contains "Authors:" prefix
+            if line.lower().startswith('authors:'):
+                authors_text = line[8:].strip()  # Remove "Authors:" prefix
+                if authors_text:
+                    authors = [author.strip() for author in authors_text.split(',')]
+                    break
+    
     return PaperMetadata(
         title=title,
-        authors=[],
+        authors=authors,
         venue=None,
         year=None,
         doi=None,
