@@ -57,6 +57,15 @@ def generate(
     summarizer: str = typer.Option(
         "textrank", "--summarizer", "-s",
         help="Summarization method (textrank, hf_transformer)"
+    ),
+    doc_type: str = typer.Option(
+        "Report", "--doc-type", help="Document type (Research Paper, Project Report, User Manual, etc.)"
+    ),
+    title: Optional[str] = typer.Option(
+        None, "--title", help="Override document title"
+    ),
+    slides: int = typer.Option(
+        20, "--slides", help="Target number of slides (5-50)"
     )
 ):
     """Generate PowerPoint presentation from research paper."""
@@ -72,6 +81,10 @@ def generate(
     
     if max_bullets < 1 or max_bullets > 10:
         console.print("[red]Error: max-bullets must be between 1 and 10[/red]")
+        raise typer.Exit(1)
+    
+    if slides < 5 or slides > 50:
+        console.print("[red]Error: slides must be between 5 and 50[/red]")
         raise typer.Exit(1)
     
     # Configure logging
@@ -101,10 +114,27 @@ def generate(
                 progress.update(task, description="Extracting metadata...")
                 metadata = _extract_metadata_from_text(text)
                 
+                # Use title override if provided, otherwise use inferred title
+                if title:
+                    metadata.title = title
+                
                 # Summarize sections
                 progress.update(task, description="Summarizing sections...")
                 summarized_sections = _summarize_sections(
                     sections, max_bullets, summarizer, logger
+                )
+                
+                # Create generation parameters
+                from app.models.schema import GenerationParams, DocumentType
+                try:
+                    doc_type_enum = DocumentType(doc_type)
+                except ValueError:
+                    doc_type_enum = DocumentType.GENERAL_REPORT
+                
+                params = GenerationParams(
+                    doc_type=doc_type_enum,
+                    title_override=title,
+                    target_slide_count=slides
                 )
                 
                 # Generate PowerPoint
@@ -116,13 +146,14 @@ def generate(
                     output_path = get_output_path("presentation.pptx")
                 
                 pptx_path, slide_count = build_presentation(
-                    metadata, summarized_sections, theme, str(output_path)
+                    metadata, summarized_sections, theme, str(output_path), params
                 )
                 
                 progress.update(task, description="Complete!")
                 
-                # Display results
-                _display_results(metadata, slide_count, pptx_path)
+                # Display results with actual title used
+                actual_title = title if title else metadata.title
+                _display_results(metadata, slide_count, pptx_path, actual_title)
             
             else:
                 # TODO: Implement DOI/URL processing
@@ -158,25 +189,14 @@ def info():
 
 def _extract_metadata_from_text(text: str) -> PaperMetadata:
     """Extract metadata from text."""
-    lines = text.split('\n')
+    from app.services.extractor import infer_title
     
-    # Find title
-    title = "Research Paper"
-    for line in lines[:10]:
-        line = line.strip()
-        if line and len(line) > 10 and len(line) < 200:
-            # Check if line contains "Title:" prefix
-            if line.lower().startswith('title:'):
-                title = line[6:].strip()  # Remove "Title:" prefix
-                if title:
-                    break
-            # Simple heuristic: title is usually longer than author names
-            elif not any(char.isdigit() for char in line):
-                title = line
-                break
+    # Use the new title inference function
+    title = infer_title(text) or "Untitled Document"
     
-    # Find authors
+    # Find authors from the first few lines
     authors = []
+    lines = text.split('\n')
     for line in lines[:20]:
         line = line.strip()
         if line and ',' in line and len(line) < 100:
@@ -224,7 +244,7 @@ def _summarize_sections(sections, max_bullets: int, summarizer_type: str, logger
     return summarized_sections
 
 
-def _display_results(metadata: PaperMetadata, slide_count: int, pptx_path: str) -> None:
+def _display_results(metadata: PaperMetadata, slide_count: int, pptx_path: str, actual_title: str = None) -> None:
     """Display generation results."""
     console.print("\n[bold green]✓ Presentation generated successfully![/bold green]\n")
     
@@ -233,7 +253,9 @@ def _display_results(metadata: PaperMetadata, slide_count: int, pptx_path: str) 
     table.add_column("Field", style="cyan")
     table.add_column("Value", style="green")
     
-    table.add_row("Title", metadata.title)
+    # Show the actual title being used in the presentation
+    display_title = actual_title if actual_title else metadata.title
+    table.add_row("Title", display_title)
     if metadata.authors:
         table.add_row("Authors", ", ".join(metadata.authors[:3]))
     if metadata.venue:

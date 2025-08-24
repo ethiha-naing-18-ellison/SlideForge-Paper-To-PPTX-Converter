@@ -28,7 +28,10 @@ async def generate_presentation(
     doi: Optional[str] = Form(None, description="DOI identifier"),
     url: Optional[str] = Form(None, description="Paper URL"),
     theme: str = Form("academic", description="Presentation theme"),
-    max_bullets: int = Form(6, ge=1, le=10, description="Maximum bullets per section")
+    max_bullets: int = Form(6, ge=1, le=10, description="Maximum bullets per section"),
+    doc_type: str = Form("Report", description="Document type"),
+    title_override: Optional[str] = Form(None, description="Override document title"),
+    target_slide_count: int = Form(20, ge=5, le=50, description="Target number of slides")
 ) -> GenerateResponse:
     """Generate PowerPoint presentation from PDF or DOI/URL."""
     logger = get_logger(__name__)
@@ -45,11 +48,11 @@ async def generate_presentation(
         # Process request
         if pdf_file:
             response = await _process_pdf_upload(
-                pdf_file, theme, max_bullets, logger
+                pdf_file, theme, max_bullets, logger, doc_type, title_override, target_slide_count
             )
         else:
             response = await _process_doi_url(
-                doi, url, theme, max_bullets, logger
+                doi, url, theme, max_bullets, logger, doc_type, title_override, target_slide_count
             )
         
         # Log performance
@@ -111,7 +114,10 @@ async def _process_pdf_upload(
     pdf_file: UploadFile,
     theme: str,
     max_bullets: int,
-    logger
+    logger,
+    doc_type: str,
+    title_override: Optional[str],
+    target_slide_count: int
 ) -> GenerateResponse:
     """Process PDF file upload."""
     # Validate file
@@ -143,10 +149,23 @@ async def _process_pdf_upload(
     # Summarize sections
     summarized_sections = await _summarize_sections(sections, max_bullets, logger)
     
+    # Create generation parameters
+    from ..models.schema import GenerationParams, DocumentType
+    try:
+        doc_type_enum = DocumentType(doc_type)
+    except ValueError:
+        doc_type_enum = DocumentType.GENERAL_REPORT
+    
+    params = GenerationParams(
+        doc_type=doc_type_enum,
+        title_override=title_override,
+        target_slide_count=target_slide_count
+    )
+    
     # Generate PowerPoint
     output_path = get_output_path("presentation.pptx")
     pptx_path, slide_count = build_presentation(
-        metadata, summarized_sections, theme, str(output_path)
+        metadata, summarized_sections, theme, str(output_path), params
     )
     
     # Generate file ID
@@ -165,7 +184,10 @@ async def _process_doi_url(
     url: Optional[str],
     theme: str,
     max_bullets: int,
-    logger
+    logger,
+    doc_type: str,
+    title_override: Optional[str],
+    target_slide_count: int
 ) -> GenerateResponse:
     """Process DOI or URL request."""
     # TODO: Implement DOI/URL processing

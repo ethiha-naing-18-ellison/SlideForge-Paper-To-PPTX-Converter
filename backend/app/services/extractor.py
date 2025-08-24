@@ -14,6 +14,52 @@ class ExtractionError(Exception):
     """Raised when PDF text extraction fails."""
     pass
 
+# --- SlideForge: Infer Title (append) ---
+import re
+from typing import Optional
+
+def infer_title(raw_text: str, meta_title: Optional[str] = None) -> Optional[str]:
+    """
+    Heuristics to determine a document title:
+    1) prefer PDF metadata title if non-generic and > 8 chars
+    2) else scan first ~40 lines for a title-like line (case, length, no trailing period)
+    """
+    def ok(t: str) -> bool:
+        bad = {"untitled", "research paper", "document", "title", "paper"}
+        return t and len(t.strip()) > 8 and t.strip().lower() not in bad
+
+    if meta_title and ok(meta_title):
+        return meta_title.strip()
+
+    lines = [l.strip() for l in raw_text.splitlines()[:80] if l.strip()]
+    
+    # First, look for explicit "Title:" prefix
+    for line in lines[:10]:
+        if line.lower().startswith('title:'):
+            title_part = line[6:].strip()  # Remove "Title:" prefix
+            if title_part and len(title_part) > 5:
+                # If the title part contains more content (like authors), extract just the title
+                # Look for common separators like "Authors:", "Abstract", etc.
+                for separator in ["Authors:", "Abstract", "Introduction", "Methods", "Results"]:
+                    if separator in title_part:
+                        title_part = title_part.split(separator)[0].strip()
+                        break
+                return title_part
+    
+    # Find longest "title-like" line near the top (no colon-only prefixes, not all caps with numbers)
+    candidates = []
+    for i, l in enumerate(lines[:40]):
+        if len(l) > 200:  # too long
+            continue
+        if l.endswith("."):
+            continue
+        # Penalize obvious non-titles
+        if re.search(r"table\s+\d+|figure\s+\d+|contents|abstract|introduction", l, re.I):
+            continue
+        candidates.append((len(l), -i, l))
+    candidates.sort(reverse=True)
+    return candidates[0][2] if candidates else None
+
 
 def extract_text_from_pdf(path: str) -> str:
     """Extract text from PDF using PyMuPDF with fallback to pdfminer.six."""
@@ -56,11 +102,24 @@ def _extract_with_pymupdf(pdf_path: Path) -> Optional[str]:
         doc = fitz.open(pdf_path)
         text = ""
         
+        # Get metadata for title inference
+        meta_title = None
+        if doc.metadata:
+            meta_title = doc.metadata.get("title")
+        
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
             text += page.get_text()
         
         doc.close()
+        
+        # If we have metadata title, try to infer better title
+        if meta_title:
+            inferred_title = infer_title(text, meta_title)
+            if inferred_title:
+                # Prepend the inferred title to the text
+                text = f"Title: {inferred_title}\n\n{text}"
+        
         return text
         
     except ImportError:

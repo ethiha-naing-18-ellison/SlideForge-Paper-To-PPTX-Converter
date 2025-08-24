@@ -12,7 +12,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
-from ...models.schema import PaperMetadata, SummarizedSection, LayoutConfig
+from ...models.schema import PaperMetadata, SummarizedSection, LayoutConfig, RenderOptions, StylePalette
 from ...utils.fileio import get_output_path
 
 
@@ -25,7 +25,8 @@ def build_presentation(
     metadata: PaperMetadata,
     sections: List[SummarizedSection],
     theme: str,
-    output_path: str
+    output_path: str,
+    params: GenerationParams = None
 ) -> Tuple[str, int]:
     """Build PowerPoint presentation from summarized sections.
     
@@ -34,11 +35,15 @@ def build_presentation(
         sections: List of summarized sections
         theme: Presentation theme (academic, minimal, corporate)
         output_path: Output file path
+        params: Generation parameters (doc type, title override, target slides)
         
     Returns:
         Tuple of (pptx_path, slide_count)
     """
     try:
+        # Use default params if none provided
+        params = params or GenerationParams()
+        
         # Create presentation with layout config
         prs, layout = init_presentation()
         
@@ -48,8 +53,15 @@ def build_presentation(
         # Create slides
         slide_count = 0
         
-        # Title slide
-        slide_count += _create_title_slide(prs, metadata, theme)
+        # Title slide with proper title and doc type
+        doc_title = params.title_override or metadata.title or "Untitled Document"
+        doc_type_label = params.doc_type.value
+        authors_or_owner = ", ".join(metadata.authors[:3]) if metadata.authors else None
+        if metadata.authors and len(metadata.authors) > 3:
+            authors_or_owner += f" et al. ({len(metadata.authors)} authors)"
+        
+        add_title_slide(prs, layout, doc_title, doc_type_label, authors_or_owner)
+        slide_count += 1
         
         # Agenda slide
         slide_count += _create_agenda_slide(prs, sections, theme)
@@ -59,9 +71,17 @@ def build_presentation(
             if section.bullets:
                 slide_count += _create_section_slide_paginated(prs, section, theme, layout)
         
+        # Ensure conclusion slide exists
+        conclusion_slides = ensure_conclusion_slide(prs, layout, sections)
+        if conclusion_slides:
+            slide_count += len(conclusion_slides)
+        
         # References slide (if available)
         if metadata.doi or metadata.url:
             slide_count += _create_references_slide(prs, metadata, theme)
+        
+        # Expand to target slide count if needed
+        expand_to_target_slides(prs, params.target_slide_count)
         
         # Final cleanup pass to remove any remaining placeholders
         finalize_presentation(prs)
@@ -69,7 +89,7 @@ def build_presentation(
         # Save presentation
         prs.save(output_path)
         
-        return output_path, slide_count
+        return output_path, len(prs.slides)
         
     except Exception as e:
         raise BuildError(f"Failed to build presentation: {str(e)}")
@@ -256,6 +276,9 @@ def _format_content(content_shape, theme: str) -> None:
 from pptx.util import Inches, Pt
 from .paginator import split_bullets_to_fit, render_bullets_block
 from .cleanup import remove_unused_placeholders
+from .richtext import tokenize_inline
+from .styling import hex_to_rgb, split_by_keywords
+from ...models.schema import RenderOptions, StylePalette
 
 def _usable_box(layout: LayoutConfig) -> tuple[float, float, float, float]:
     """Return (left, top, width, height) in inches for the content area beneath the title."""
@@ -359,13 +382,31 @@ def add_section_with_bullets_paginated(
     for idx, (chunk, font_pt) in enumerate(chunks):
         title_text = section_title if idx == 0 else f"{section_title} (cont.)"
         slide = add_titled_slide_placeholder_free(prs, layout, title_text)
-        render_bullets_block(
+        
+        # Choose render options based on section type
+        if "method" in section_title.lower():
+            # Methods get numbered lists with emphasized first words
+            render_options = RenderOptions(
+                list_type="numbered",
+                emphasize_first_words=3,
+                highlight_keywords=["step", "process", "method", "technique"]
+            )
+        else:
+            # Other sections get bullets with default styling
+            render_options = RenderOptions(
+                list_type="bullets",
+                emphasize_first_words=0,
+                highlight_keywords=["key contribution", "result", "impact", "limitation", "future work"]
+            )
+        
+        render_styled_bullets(
             slide=slide,
             left_in=left, top_in=top, width_in=width, height_in=height,
-            title_text=None,
             bullets=chunk,
             font_pt=font_pt,
-            line_spacing=layout.bullet_line_spacing
+            line_spacing=layout.bullet_line_spacing,
+            palette=StylePalette(),
+            options=render_options
         )
         # Ensure no default placeholders remain after rendering content
         remove_unused_placeholders(slide)
@@ -395,3 +436,130 @@ def finalize_presentation(prs):
         except Exception:
             continue
     return prs
+
+
+# --- SlideForge Enhanced Bullet Rendering (append) ---
+from pptx.util import Inches, Pt
+from pptx.enum.text import PP_PARAGRAPH_ALIGNMENT
+from pptx.oxml.xmlchemy import OxmlElement
+
+def render_styled_bullets(
+    slide,
+    left_in: float, top_in: float, width_in: float, height_in: float,
+    bullets: list[str],
+    font_pt: int,
+    line_spacing: float,
+    palette: StylePalette,
+    options: RenderOptions,
+):
+    box = slide.shapes.add_textbox(Inches(left_in), Inches(top_in), Inches(width_in), Inches(height_in))
+    tf = box.text_frame
+    tf.word_wrap = True
+    try:
+        from pptx.enum.text import MSO_AUTO_SIZE
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+    except Exception:
+        pass
+
+    tf.clear()  # start clean
+
+    for idx, raw in enumerate(bullets):
+        p = tf.add_paragraph() if idx > 0 else tf.paragraphs[0]
+        p.level = 0
+        p.alignment = PP_PARAGRAPH_ALIGNMENT.LEFT
+        p.space_after = Pt(6)
+        p.line_spacing = line_spacing
+
+        # numbering vs bullets
+        if options.list_type == "numbered":
+            p.numbered = True
+        else:
+            p.level = 0  # default bullet from theme
+            p.numbered = False
+
+        text_to_render = raw
+
+        # Optional: emphasize first N words in bold
+        if options.emphasize_first_words and " " in text_to_render:
+            parts = text_to_render.split()
+            n = min(len(parts), options.emphasize_first_words)
+            text_to_render = "**" + " ".join(parts[:n]) + "** " + " ".join(parts[n:])
+
+        # Keyword highlighting (colorize matches)
+        segments_key = split_by_keywords(text_to_render, options.highlight_keywords)
+        for seg_text, is_key in segments_key:
+            # Inline markup
+            if options.enable_inline_markup:
+                rt_parts = tokenize_inline(seg_text)
+            else:
+                rt_parts = [(seg_text, {"bold": False, "italic": False, "underline": False})]
+
+            for txt, style in rt_parts:
+                run = p.add_run()
+                run.text = txt
+                if font_pt:
+                    run.font.size = Pt(font_pt)
+                run.font.bold = style.get("bold", False)
+                run.font.italic = style.get("italic", False)
+                run.font.underline = style.get("underline", False)
+
+                # base color
+                run.font.color.rgb = hex_to_rgb(palette.text_primary)
+                # key color override
+                if is_key and options.key_color:
+                    run.font.color.rgb = hex_to_rgb(options.key_color)
+
+# --- SlideForge: Title, Conclusion, Target Slides (append) ---
+from ...models.schema import LayoutConfig, GenerationParams, DocumentType
+from .cleanup import remove_unused_placeholders
+from .paginator import render_bullets_block
+from .expander import expand_to_target_slides
+
+def add_title_slide(prs, layout: LayoutConfig, doc_title: str, doc_type_label: str, authors_or_owner: str | None = None):
+    slide = add_titled_slide_placeholder_free(prs, layout, doc_title or "Untitled")
+    # Add subtitle line (doc type + optional owner)
+    left = layout.margin_left_in
+    width = layout.slide_width_in - layout.margin_left_in - layout.margin_right_in
+    top = layout.margin_top_in + layout.title_height_in + 0.15
+    height = 0.6
+    subtitle = doc_type_label if not authors_or_owner else f"{doc_type_label}  •  {authors_or_owner}"
+    add_title_textbox(slide, subtitle, left, top, width, height, pt=18)
+    remove_unused_placeholders(slide)
+    return slide
+
+def ensure_conclusion_slide(prs, layout: LayoutConfig, summarized_sections: list):
+    """
+    If a 'Conclusion' section was not rendered, synthesize one from existing bullets.
+    """
+    found = False
+    for s in prs.slides:
+        for shp in s.shapes:
+            if getattr(shp, "has_text_frame", False) and shp.has_text_frame:
+                txt = "".join(p.text or "" for p in shp.text_frame.paragraphs).strip().lower()
+                if txt.startswith("conclusion") or "conclusion (cont.)" in txt:
+                    found = True
+                    break
+        if found:
+            break
+    if found:
+        return
+
+    # Synthesize: collect up to 6 top bullets across sections
+    bullets = []
+    for sec in summarized_sections:
+        for b in getattr(sec, "bullets", [])[:2]:
+            bullets.append(b)
+        if len(bullets) >= 6:
+            break
+
+    if not bullets:
+        bullets = ["This document has been summarized into key insights.", "Please see previous slides for details."]
+
+    slides = add_section_with_bullets_paginated(
+        prs=prs,
+        theme_layout=None,   # not used by placeholder_free path
+        layout=layout,
+        section_title="Conclusion",
+        bullets=bullets
+    )
+    return slides
