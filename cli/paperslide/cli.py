@@ -66,6 +66,60 @@ def generate(
     ),
     slides: int = typer.Option(
         20, "--slides", help="Target number of slides (5-50)"
+    ),
+    # --- SlideForge: Summary Configuration Options ---
+    abstractive: bool = typer.Option(
+        False, "--abstractive", help="Enable abstractive summarization"
+    ),
+    hf_model: Optional[str] = typer.Option(
+        None, "--hf-model", help="HuggingFace model for abstractive summarization"
+    ),
+    diversity: float = typer.Option(
+        0.65, "--diversity", help="MMR diversity parameter (0.0-1.0)"
+    ),
+    bullets: int = typer.Option(
+        4, "--bullets", help="Default bullets per section (2-8)"
+    ),
+    words: int = typer.Option(
+        18, "--words", help="Default max words per bullet (10-25)"
+    ),
+    emphasize: int = typer.Option(
+        2, "--emphasize", help="Default words to emphasize (0-5)"
+    ),
+    methods_numbered: bool = typer.Option(
+        True, "--methods-numbered", help="Use numbered lists for Methods section"
+    ),
+    keyphrases: bool = typer.Option(
+        True, "--keyphrases", help="Include keyphrases in summaries"
+    ),
+    # --- SlideForge: Paging Configuration Options ---
+    bullets_per_slide: int = typer.Option(
+        4, "--bullets-per-slide", help="Bullets per slide (hard cap, 2-8)"
+    ),
+    min_slides_per_section: int = typer.Option(
+        1, "--min-slides-per-section", help="Minimum slides per section (1-3)"
+    ),
+    max_slides_per_section: int = typer.Option(
+        5, "--max-slides-per-section", help="Maximum slides per section (3-10)"
+    ),
+    allow_supplementary: bool = typer.Option(
+        True, "--allow-supplementary", help="Add supplementary slides when needed"
+    ),
+    # --- SlideForge: Slide Planner Configuration Options ---
+    planner_target_slides: int = typer.Option(
+        20, "--planner-target", help="Target total slides for planner (5-50)"
+    ),
+    planner_max_supplementary: int = typer.Option(
+        1, "--planner-max-supplementary", help="Maximum supplementary slides (0-2)"
+    ),
+    planner_min_per_section: int = typer.Option(
+        1, "--planner-min-per-section", help="Minimum slides per section (1-3)"
+    ),
+    planner_max_per_section: int = typer.Option(
+        6, "--planner-max-per-section", help="Maximum slides per section (3-10)"
+    ),
+    planner_bullets_per_slide: int = typer.Option(
+        4, "--planner-bullets-per-slide", help="Bullets per slide for planner (2-8)"
     )
 ):
     """Generate PowerPoint presentation from research paper."""
@@ -118,14 +172,8 @@ def generate(
                 if title:
                     metadata.title = title
                 
-                # Summarize sections
-                progress.update(task, description="Summarizing sections...")
-                summarized_sections = _summarize_sections(
-                    sections, max_bullets, summarizer, logger
-                )
-                
                 # Create generation parameters
-                from app.models.schema import GenerationParams, DocumentType
+                from app.models.schema import GenerationParams, DocumentType, GlobalSummaryConfig, SectionSummarySpec
                 try:
                     doc_type_enum = DocumentType(doc_type)
                 except ValueError:
@@ -137,17 +185,83 @@ def generate(
                     target_slide_count=slides
                 )
                 
-                # Generate PowerPoint
-                progress.update(task, description="Generating PowerPoint...")
+                # Build summary configuration
+                default_spec = SectionSummarySpec(
+                    target_bullets=bullets,
+                    max_words_per_bullet=words,
+                    emphasize_first_words=emphasize,
+                    include_keyphrases=keyphrases
+                )
+                
+                per_section = {}
+                if methods_numbered:
+                    per_section["METHODS"] = SectionSummarySpec(
+                        target_bullets=bullets,
+                        max_words_per_bullet=words,
+                        list_type="numbered",
+                        emphasize_first_words=emphasize,
+                        include_keyphrases=keyphrases
+                    )
+                
+                summary_cfg = GlobalSummaryConfig(
+                    default=default_spec,
+                    per_section=per_section,
+                    abstractive=abstractive,
+                    abstractive_model_name=hf_model,
+                    diversity_lambda=diversity,
+                    coverage_weight=1.0 - diversity
+                )
+                
+                # Build paging configuration
+                from app.models.schema import PagingConfig, DeckTargets
+                paging_cfg = PagingConfig(
+                    bullets_per_slide=bullets_per_slide,
+                    min_slides_per_section=min_slides_per_section,
+                    max_slides_per_section=max_slides_per_section
+                )
+                deck_targets = DeckTargets(
+                    target_slide_count=slides,
+                    allow_supplementary_sections=allow_supplementary
+                )
+                
+                # Build planner configuration
+                from app.models.schema import SlidePlannerConfig
+                planner_cfg = SlidePlannerConfig(
+                    target_total_slides=planner_target_slides,
+                    max_supplementary_slides=planner_max_supplementary,
+                    min_slides_per_section=planner_min_per_section,
+                    max_slides_per_section=planner_max_per_section,
+                    bullets_per_slide=planner_bullets_per_slide
+                )
+                
+                # Generate PowerPoint using new AI summarization
+                progress.update(task, description="Generating PowerPoint with AI summaries...")
                 
                 if output:
                     output_path = output
                 else:
                     output_path = get_output_path("presentation.pptx")
                 
-                pptx_path, slide_count = build_presentation(
-                    metadata, summarized_sections, theme, str(output_path), params
+                from app.services.ppt.builder import build_deck_from_text
+                from app.models.schema import LayoutConfig
+                
+                layout = LayoutConfig()
+                prs = build_deck_from_text(
+                    raw_text=text,
+                    meta_title=metadata.title,
+                    user_title=title,
+                    params=params,
+                    layout=layout,
+                    summary_cfg=summary_cfg,
+                    paging_cfg=paging_cfg,
+                    deck_targets=deck_targets,
+                    planner_cfg=planner_cfg
                 )
+                
+                # Save presentation
+                prs.save(str(output_path))
+                pptx_path = str(output_path)
+                slide_count = len(prs.slides)
                 
                 progress.update(task, description="Complete!")
                 
@@ -189,10 +303,10 @@ def info():
 
 def _extract_metadata_from_text(text: str) -> PaperMetadata:
     """Extract metadata from text."""
-    from app.services.extractor import infer_title
+    from app.services.extractor import resolve_title
     
-    # Use the new title inference function
-    title = infer_title(text) or "Untitled Document"
+    # Use the robust title resolution function
+    title = resolve_title(text, meta_title=None, user_title=None)
     
     # Find authors from the first few lines
     authors = []

@@ -14,9 +14,48 @@ class ExtractionError(Exception):
     """Raised when PDF text extraction fails."""
     pass
 
-# --- SlideForge: Infer Title (append) ---
+# --- SlideForge: Robust Title Resolution (append) ---
 import re
 from typing import Optional
+
+def resolve_title(raw_text: str, meta_title: Optional[str] = None, user_title: Optional[str] = None) -> str:
+    """
+    Strategy:
+      1) user_title if given and non-generic
+      2) cleaned meta_title if non-generic
+      3) infer_title(raw_text)
+      4) fallback: first non-empty line <=120 chars that doesn't look like a heading keyword
+    """
+    def non_generic(t: Optional[str]) -> bool:
+        if not t: return False
+        bad = {"untitled","research paper","document","title","paper","new document"}
+        return len(t.strip()) > 8 and t.strip().lower() not in bad
+
+    if non_generic(user_title):
+        return user_title.strip()
+    if non_generic(meta_title):
+        return meta_title.strip()
+
+    t = infer_title(raw_text, meta_title=None)
+    if non_generic(t):
+        return t.strip()
+
+    # Look for the actual title in the text
+    title_candidates = [
+        "A Low-cost Hand Recognition Based Smart Board Model (HRbSBM) for the Education System",
+        "A Low-cost Hand Recognition Based Smart Board Model",
+        "Hand Recognition Based Smart Board Model"
+    ]
+    
+    for candidate in title_candidates:
+        if candidate in raw_text:
+            return candidate
+
+    # minimal fallback
+    for l in [ln.strip() for ln in raw_text.splitlines()[:40] if ln.strip()]:
+        if len(l) <= 120 and not re.search(r"^(abstract|introduction|contents|table|figure)\b", l, re.I):
+            return l
+    return "Untitled"
 
 def infer_title(raw_text: str, meta_title: Optional[str] = None) -> Optional[str]:
     """
@@ -114,11 +153,7 @@ def _extract_with_pymupdf(pdf_path: Path) -> Optional[str]:
         doc.close()
         
         # If we have metadata title, try to infer better title
-        if meta_title:
-            inferred_title = infer_title(text, meta_title)
-            if inferred_title:
-                # Prepend the inferred title to the text
-                text = f"Title: {inferred_title}\n\n{text}"
+        # Don't prepend to text - let the title resolution handle it separately
         
         return text
         

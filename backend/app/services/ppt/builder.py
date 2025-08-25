@@ -12,14 +12,267 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
-from ...models.schema import PaperMetadata, SummarizedSection, LayoutConfig, RenderOptions, StylePalette
-from ...utils.fileio import get_output_path
+from app.models.schema import PaperMetadata, SummarizedSection, LayoutConfig, RenderOptions, StylePalette
+from app.utils.fileio import get_output_path
 
 
 class BuildError(Exception):
     """Raised when PowerPoint generation fails."""
     pass
 
+
+# --- SlideForge: Use AI section summaries (append) ---
+from app.summarizer.section_summarizer import summarize_sections
+from app.models.schema import GlobalSummaryConfig, SectionSummarySpec, PagingConfig, DeckTargets, SlidePlannerConfig
+from app.services.extractor import resolve_title
+
+# --- SlideForge: Formatting Fixes (append) ---
+from .titleblock import create_clean_title_slide
+from .footer import apply_footer_to_all_slides
+from .cleantext import normalize_text, split_runs_from_markdown, clean_bullet_text, remove_raw_markdown
+from .callouts import add_keyterms_callout
+from .bullets_preprocess import preprocess_for_slide
+from .markdown_runs import to_runs
+from .sections import canonicalize, cont_title, get_section_display_name, clean_section_title
+from .labels import strip_label_prefix
+from app.summarizer.conclusion import create_conclusion_slide_content
+
+def build_deck_from_text(
+    raw_text: str,
+    meta_title: str | None,
+    user_title: str | None,
+    params,              # GenerationParams from earlier work
+    layout: LayoutConfig,
+    summary_cfg: GlobalSummaryConfig | None = None,
+    paging_cfg: PagingConfig | None = None,
+    deck_targets: DeckTargets | None = None,
+    planner_cfg: SlidePlannerConfig | None = None
+):
+    summary_cfg = summary_cfg or GlobalSummaryConfig()
+    prs, layout = init_presentation(layout)
+    # Title
+    title = resolve_title(raw_text, meta_title=meta_title, user_title=user_title)
+    create_clean_title_slide(prs, layout, title, params.doc_type.value, authors=None)
+
+    # Use simple section mapper for better section detection
+    sections_raw = map_sections_by_content(raw_text)
+    sec_map = {}
+    
+    # Summarize each detected section
+    for section_name, section_text in sections_raw.items():
+        if section_text.strip():
+            bullets = summarize_section_with_budget(
+                section_text, 
+                summary_cfg,
+                summary_cfg.default.target_bullets,
+                summary_cfg.default.max_words_per_bullet
+            )
+            if bullets:
+                sec_map[section_name] = bullets
+
+    # Use topic-aware rendering if planner config is provided, otherwise fall back to old method
+    if planner_cfg:
+        render_deck_topic_aware(prs, raw_text, layout, summary_cfg, planner_cfg)
+    else:
+        # Fallback to old rendering method
+        order = ["ABSTRACT","INTRODUCTION","METHODS","RESULTS","DISCUSSION","LIMITATIONS","CONCLUSION","FUTURE WORK","OTHER"]
+        paging = paging_cfg or DEFAULT_PAGING  # Use provided paging config or default
+        
+        for name in order:
+            if name in sec_map and sec_map[name]:
+                bullets = sec_map[name]
+                
+                # Remove inline key terms before preprocessing (already handled in sanitize_lines)
+                bullets = [b for b in bullets if b]
+                
+                # Get canonical section name
+                canon_name = canonicalize(name)
+                display_name = clean_section_title(get_section_display_name(canon_name))
+                
+                # Preprocess bullets for this section
+                pre_bullets, list_type = preprocess_for_slide(
+                    raw_lines=bullets,
+                    canon_section=canon_name,
+                    max_words_per_bullet=18,
+                    max_bullets=5,
+                    emphasize_n_words=2,
+                )
+                
+                # Create render options
+                options = RenderOptions(
+                    list_type=list_type,  # 'numbered' for Methods, else 'bullets'
+                    enable_inline_markup=True,
+                    emphasize_first_words=0,  # already applied by preprocessor
+                )
+                
+                # Use new paging function instead of old pagination
+                slides = render_section_with_paging(
+                    prs=prs,
+                    layout=layout,
+                    section_title=display_name,
+                    bullets=pre_bullets,
+                    paging=paging,
+                    font_pt=layout.bullet_font_min_pt,
+                    line_spacing=layout.bullet_line_spacing,
+                    options=options,
+                    palette=StylePalette()
+                )
+                
+                # Add key terms callout to first slide of each section
+                if slides and name in sec_map:
+                    # Extract key terms from this section's text
+                    from app.nlp.keyphrase import extract_keyphrases
+                    section_text = " ".join(bullets)
+                    key_terms = extract_keyphrases(section_text, top_k=3)
+                    if key_terms:
+                        add_keyterms_callout(slides[0], layout, key_terms)
+
+    # Enhanced expansion to meet target slide count
+    from app.services.ppt.expander import expand_to_target_slides, expand_to_target_slides_supplement, add_supplementary
+    
+    # First try splitting any dense slides
+    expand_to_target_slides(prs, params.target_slide_count)
+    
+    # Use planner config if provided, otherwise use deck targets or params
+    if planner_cfg:
+        target_count = planner_cfg.target_total_slides
+        # If still short, add limited supplementary slides (capped)
+        needed = target_count - len(prs.slides)
+        if needed > 0:
+            add_supplementary(prs, max_supplementary=planner_cfg.max_supplementary_slides, raw_text=raw_text)
+    else:
+        # Use deck targets if provided, otherwise use params
+        target_count = deck_targets.target_slide_count if deck_targets else params.target_slide_count
+        
+        # If still short, add supplementary slides
+        if len(prs.slides) < target_count:
+            expand_to_target_slides_supplement(prs, target_count, raw_text)
+    
+    # Apply final formatting: footers, conclusion, cleanup
+    _apply_final_formatting(prs, layout, title, sec_map)
+    
+    return prs
+
+# --- SlideForge: Per-section Paging Hook (append) ---
+from app.models.schema import PagingConfig, DeckTargets
+from app.services.ppt.pager import chunk_bullets
+
+DEFAULT_PAGING = PagingConfig(bullets_per_slide=4, min_slides_per_section=1, max_slides_per_section=5)
+
+def render_section_with_paging(
+    prs,
+    layout,
+    section_title: str,
+    bullets: list[str],
+    paging: PagingConfig,
+    font_pt: int,
+    line_spacing: float,
+    options,   # RenderOptions from styling
+    palette    # StylePalette
+):
+    # Split bullets into per-slide chunks
+    pages = chunk_bullets(
+        bullets=bullets,
+        bullets_per_slide=paging.bullets_per_slide,
+        min_slides=paging.min_slides_per_section,
+        max_slides=paging.max_slides_per_section,
+    )
+
+    slides = []
+    left = layout.margin_left_in
+    top = layout.margin_top_in + layout.title_height_in
+    width = layout.slide_width_in - layout.margin_left_in - layout.margin_right_in
+    height = layout.slide_height_in - layout.margin_top_in - layout.margin_bottom_in - layout.title_height_in
+
+    for idx, page_bullets in enumerate(pages):
+        title = section_title if idx == 0 else f"{section_title} (cont.)"
+        slide = add_titled_slide_placeholder_free(prs, layout, title)
+        # Use the same styled bullet renderer (already no-overflow safe via our earlier pagination)
+        render_styled_bullets(
+            slide=slide,
+            left_in=left, top_in=top, width_in=width, height_in=height,
+            bullets=page_bullets,
+            font_pt=font_pt,
+            line_spacing=line_spacing,
+            palette=palette,
+            options=options
+        )
+        remove_unused_placeholders(slide)
+        slides.append(slide)
+    return slides
+
+# --- SlideForge: Topic-aware section rendering (append) ---
+from app.services.ppt.planner import allocate_slides
+from app.nlp.segmenter import split_to_sections, sentences
+from app.nlp.topic_chunker import cluster_sentences, topic_subtitles
+from app.summarizer.section_summarizer import summarize_section_with_budget
+from app.nlp.abstractive import abstractive_summarize
+from .simple_sections import map_sections_by_content
+
+def render_deck_topic_aware(
+    prs, raw_text: str, layout, summary_cfg, planner: SlidePlannerConfig
+):
+    # 1) Decide slides per section
+    section_to_n = allocate_slides(
+        raw_text=raw_text,
+        target_total=planner.target_total_slides - 1,  # reserve title
+        min_per=planner.min_slides_per_section,
+        max_per=planner.max_slides_per_section,
+        bias=planner.allocation_bias or {"INTRODUCTION":1.2,"METHODS":1.4,"RESULTS":1.4,"CONCLUSION":1.1}
+    )
+
+    # 2) For each section, create topic clusters and render subslides
+    sections_raw = map_sections_by_content(raw_text)
+    for raw_h, text in sections_raw.items():
+        name = canonicalize(raw_h)
+        desired_slides = max(planner.min_slides_per_section, section_to_n.get(name, 0))
+        if desired_slides <= 0:
+            continue
+
+        # cluster sentences into desired_slides topics
+        sents = sentences(text)[: max(5, summary_cfg.max_section_sentences * 2)]
+        clusters = cluster_sentences(sents, desired_slides)
+        subtitles = topic_subtitles(sents, clusters)
+
+        for idx, ids in enumerate(clusters):
+            # bullet budget for this subslide
+            bullet_budget = planner.bullets_per_slide
+            chosen = [sents[i] for i in ids]
+            bullets = abstractive_summarize(chosen, summary_cfg.abstractive_model_name if summary_cfg.abstractive else None, summary_cfg.default.max_words_per_bullet)
+            bullets = bullets[:bullet_budget]
+            
+            # Remove inline key terms before preprocessing (already handled in sanitize_lines)
+            bullets = [b for b in bullets if b]
+            
+            # Get canonical section name
+            canon_name = canonicalize(name)
+            display_name = clean_section_title(get_section_display_name(canon_name))
+            
+            # Preprocess bullets for this topic
+            pre_bullets, list_type = preprocess_for_slide(
+                raw_lines=bullets,
+                canon_section=canon_name,
+                max_words_per_bullet=18,
+                max_bullets=5,
+                emphasize_n_words=2,
+            )
+            
+            subtitle = f"{display_name} — {subtitles[idx]}" if subtitles[idx] else display_name
+            slides = render_section_with_paging(
+                prs=prs, layout=layout, section_title=subtitle,
+                bullets=pre_bullets, paging=PagingConfig(bullets_per_slide=planner.bullets_per_slide, min_slides_per_section=1, max_slides_per_section=1),
+                font_pt=layout.bullet_font_min_pt, line_spacing=layout.bullet_line_spacing,
+                options=RenderOptions(list_type=list_type, enable_inline_markup=True, emphasize_first_words=0),
+                palette=StylePalette()
+            )
+            
+            # Add key terms callout to first slide
+            if slides:
+                from app.nlp.keyphrase import extract_keyphrases
+                section_text = " ".join(chosen)
+                key_terms = extract_keyphrases(section_text, top_k=3)
+                if key_terms:
+                    add_keyterms_callout(slides[0], layout, key_terms)
 
 def build_presentation(
     metadata: PaperMetadata,
@@ -60,7 +313,7 @@ def build_presentation(
         if metadata.authors and len(metadata.authors) > 3:
             authors_or_owner += f" et al. ({len(metadata.authors)} authors)"
         
-        add_title_slide(prs, layout, doc_title, doc_type_label, authors_or_owner)
+        # Title slide already created above
         slide_count += 1
         
         # Agenda slide
@@ -278,7 +531,7 @@ from .paginator import split_bullets_to_fit, render_bullets_block
 from .cleanup import remove_unused_placeholders
 from .richtext import tokenize_inline
 from .styling import hex_to_rgb, split_by_keywords
-from ...models.schema import RenderOptions, StylePalette
+from app.models.schema import RenderOptions, StylePalette
 
 def _usable_box(layout: LayoutConfig) -> tuple[float, float, float, float]:
     """Return (left, top, width, height) in inches for the content area beneath the title."""
@@ -485,32 +738,24 @@ def render_styled_bullets(
             n = min(len(parts), options.emphasize_first_words)
             text_to_render = "**" + " ".join(parts[:n]) + "** " + " ".join(parts[n:])
 
-        # Keyword highlighting (colorize matches)
-        segments_key = split_by_keywords(text_to_render, options.highlight_keywords)
-        for seg_text, is_key in segments_key:
-            # Inline markup
-            if options.enable_inline_markup:
-                rt_parts = tokenize_inline(seg_text)
-            else:
-                rt_parts = [(seg_text, {"bold": False, "italic": False, "underline": False})]
-
-            for txt, style in rt_parts:
-                run = p.add_run()
-                run.text = txt
-                if font_pt:
-                    run.font.size = Pt(font_pt)
-                run.font.bold = style.get("bold", False)
-                run.font.italic = style.get("italic", False)
-                run.font.underline = style.get("underline", False)
-
-                # base color
-                run.font.color.rgb = hex_to_rgb(palette.text_primary)
-                # key color override
-                if is_key and options.key_color:
-                    run.font.color.rgb = hex_to_rgb(options.key_color)
+        # Use robust markdown formatting for the text
+        runs = to_runs(text_to_render)
+        
+        # Render each run with proper formatting
+        for txt, style in runs:
+            run = p.add_run()
+            run.text = txt
+            if font_pt:
+                run.font.size = Pt(font_pt)
+            run.font.bold = style.get("b", False)
+            run.font.italic = style.get("i", False)
+            run.font.underline = style.get("u", False)
+            
+            # base color
+            run.font.color.rgb = hex_to_rgb(palette.text_primary)
 
 # --- SlideForge: Title, Conclusion, Target Slides (append) ---
-from ...models.schema import LayoutConfig, GenerationParams, DocumentType
+from app.models.schema import LayoutConfig, GenerationParams, DocumentType
 from .cleanup import remove_unused_placeholders
 from .paginator import render_bullets_block
 from .expander import expand_to_target_slides
@@ -563,3 +808,166 @@ def ensure_conclusion_slide(prs, layout: LayoutConfig, summarized_sections: list
         bullets=bullets
     )
     return slides
+
+# --- SlideForge: Cleanup and Final Formatting (append) ---
+
+def _is_meaningless(slide):
+    """Check if a slide is meaningless (only generic text, no content)."""
+    texts = []
+    for shp in slide.shapes:
+        if getattr(shp, "has_text_frame", False) and shp.has_text_frame:
+            txt = " ".join(p.text or "" for p in shp.text_frame.paragraphs).strip().lower()
+            if txt:
+                texts.append(txt)
+    
+    if not texts:
+        return True
+    
+    # Check for generic titles
+    if len(texts) == 1 and texts[0] in {"report", "other", "untitled"}:
+        return True
+    
+    return False
+
+def _dedupe_adjacent(slides):
+    """Remove adjacent duplicate slides."""
+    keep = []
+    last_sig = None
+    
+    for s in slides:
+        first = ""
+        title = ""
+        
+        for shp in s.shapes:
+            if getattr(shp, "text_frame", None) and shp.text_frame and shp.text_frame.paragraphs:
+                txt = shp.text_frame.paragraphs[0].text.strip().lower()
+                if not title:
+                    title = txt
+                if not first and len(shp.text_frame.paragraphs) > 1:
+                    first = shp.text_frame.paragraphs[1].text.strip().lower()
+        
+        sig = (title, first)
+        if sig != last_sig:
+            keep.append(s)
+        last_sig = sig
+    
+    return keep
+
+def _render_markdown_text_to_paragraph(paragraph, md_text: str, font_pt: int):
+    """Render markdown text to a paragraph with proper formatting."""
+    runs = split_runs_from_markdown(md_text)
+    
+    for i, (txt, style) in enumerate(runs):
+        if i == 0 and paragraph.runs:
+            r = paragraph.runs[0]
+        else:
+            r = paragraph.add_run()
+        
+        r.text = txt
+        try:
+            r.font.size = Pt(font_pt)
+            r.font.bold = style.get("b", False)
+            r.font.italic = style.get("i", False)
+            r.font.underline = style.get("u", False)
+        except Exception:
+            pass
+
+def _clean_and_format_bullets(bullets: list[str], max_words: int = 18) -> list[str]:
+    """Clean and format bullet points."""
+    cleaned = []
+    for bullet in bullets:
+        if bullet:
+            # Clean the bullet text
+            clean_bullet = clean_bullet_text(bullet, max_words)
+            if clean_bullet:
+                # Split long bullets into multiple if they contain semicolons or commas
+                if len(clean_bullet.split()) > max_words and (";" in clean_bullet or "," in clean_bullet):
+                    if ";" in clean_bullet:
+                        parts = [p.strip() for p in clean_bullet.split(";") if p.strip()]
+                    else:
+                        parts = [p.strip() for p in clean_bullet.split(",") if p.strip()]
+                    
+                    # Add each part as a separate bullet if it's reasonable length
+                    for part in parts:
+                        if len(part.split()) <= max_words and part:
+                            cleaned.append(part)
+                else:
+                    cleaned.append(clean_bullet)
+    return cleaned
+
+def _is_meaningless(slide) -> bool:
+    """Check if a slide contains only meaningless content."""
+    texts = []
+    for shp in slide.shapes:
+        if getattr(shp, "has_text_frame", False) and shp.has_text_frame:
+            txt = " ".join((p.text or "") for p in shp.text_frame.paragraphs).strip().lower()
+            if txt:
+                texts.append(txt)
+    
+    return (not texts) or (len(texts) == 1 and texts[0] in {"report", "other", "untitled"})
+
+def _dedupe_adjacent(prs):
+    """Remove adjacent duplicate slides."""
+    keep = []
+    last_sig = None
+    
+    for s in list(prs.slides):
+        first = ""
+        title = ""
+        
+        for shp in s.shapes:
+            if getattr(shp, "text_frame", None) and shp.text_frame and shp.text_frame.paragraphs:
+                txt = shp.text_frame.paragraphs[0].text.strip().lower()
+                if not title:
+                    title = txt
+                if not first and len(shp.text_frame.paragraphs) > 1:
+                    first = shp.text_frame.paragraphs[1].text.strip().lower()
+        
+        sig = (title, first)
+        if sig != last_sig and not _is_meaningless(s):
+            keep.append(s)
+        last_sig = sig
+    
+    return keep
+
+def _apply_final_formatting(prs, layout, doc_title: str, sec_map: dict):
+    """Apply final formatting: footers, conclusion, cleanup."""
+    # Apply footers to all slides
+    apply_footer_to_all_slides(prs, layout, doc_title)
+    
+    # Ensure we have a proper conclusion
+    if "CONCLUSION" not in sec_map or not sec_map["CONCLUSION"]:
+        conclusion_bullets, key_terms = create_conclusion_slide_content(sec_map)
+        sec_map["CONCLUSION"] = conclusion_bullets
+        
+        # Remove inline key terms and preprocess conclusion bullets (already handled in sanitize_lines)
+        conclusion_bullets = [b for b in conclusion_bullets if b]
+        pre_conclusion, list_type = preprocess_for_slide(
+            raw_lines=conclusion_bullets,
+            canon_section="CONCLUSION",
+            max_words_per_bullet=18,
+            max_bullets=4,
+            emphasize_n_words=2,
+        )
+        
+        # Render conclusion slide
+        slides = render_section_with_paging(
+            prs=prs,
+            layout=layout,
+            section_title="Conclusion",
+            bullets=pre_conclusion,
+            paging=PagingConfig(bullets_per_slide=4, min_slides_per_section=1, max_slides_per_section=2),
+            font_pt=layout.bullet_font_min_pt,
+            line_spacing=layout.bullet_line_spacing,
+            options=RenderOptions(list_type=list_type, enable_inline_markup=True, emphasize_first_words=0),
+            palette=StylePalette()
+        )
+        
+        # Add key terms callout to conclusion slide
+        if slides and key_terms:
+            add_keyterms_callout(slides[0], layout, key_terms)
+    
+    # Note: Slide removal is complex with python-pptx and can cause issues
+    # For now, we'll skip automatic slide removal to avoid errors
+    # The meaningless slide detection is available for future use
+    pass

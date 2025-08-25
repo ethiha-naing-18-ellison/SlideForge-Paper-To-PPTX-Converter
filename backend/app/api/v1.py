@@ -31,7 +31,29 @@ async def generate_presentation(
     max_bullets: int = Form(6, ge=1, le=10, description="Maximum bullets per section"),
     doc_type: str = Form("Report", description="Document type"),
     title_override: Optional[str] = Form(None, description="Override document title"),
-    target_slide_count: int = Form(20, ge=5, le=50, description="Target number of slides")
+    target_slide_count: int = Form(20, ge=5, le=50, description="Target number of slides"),
+    # --- SlideForge: Summary Configuration Parameters ---
+    abstractive: bool = Form(False, description="Enable abstractive summarization"),
+    abstractive_model_name: Optional[str] = Form(None, description="HuggingFace model for abstractive summarization"),
+    diversity_lambda: float = Form(0.65, ge=0.0, le=1.0, description="MMR diversity parameter"),
+    coverage_weight: float = Form(0.35, ge=0.0, le=1.0, description="Coverage vs salience tradeoff"),
+    max_section_sentences: int = Form(10, ge=5, le=20, description="Maximum sentences to rank per section"),
+    default_target_bullets: int = Form(4, ge=2, le=8, description="Default bullets per section"),
+    default_max_words: int = Form(18, ge=10, le=25, description="Default max words per bullet"),
+    default_emphasize_words: int = Form(2, ge=0, le=5, description="Default words to emphasize"),
+    methods_numbered: bool = Form(True, description="Use numbered lists for Methods section"),
+    include_keyphrases: bool = Form(True, description="Include keyphrases in summaries"),
+    # --- SlideForge: Paging Configuration Parameters ---
+    bullets_per_slide: int = Form(4, ge=2, le=8, description="Bullets per slide (hard cap)"),
+    min_slides_per_section: int = Form(1, ge=1, le=3, description="Minimum slides per section"),
+    max_slides_per_section: int = Form(5, ge=3, le=10, description="Maximum slides per section"),
+    allow_supplementary_sections: bool = Form(True, description="Add supplementary slides when needed"),
+    # --- SlideForge: Slide Planner Configuration Parameters ---
+    planner_target_slides: int = Form(20, ge=5, le=50, description="Target total slides for planner"),
+    planner_max_supplementary: int = Form(1, ge=0, le=2, description="Maximum supplementary slides (0-2)"),
+    planner_min_per_section: int = Form(1, ge=1, le=3, description="Minimum slides per section"),
+    planner_max_per_section: int = Form(6, ge=3, le=10, description="Maximum slides per section"),
+    planner_bullets_per_slide: int = Form(4, ge=2, le=8, description="Bullets per slide for planner")
 ) -> GenerateResponse:
     """Generate PowerPoint presentation from PDF or DOI/URL."""
     logger = get_logger(__name__)
@@ -45,14 +67,70 @@ async def generate_presentation(
                 detail="Either PDF file, DOI, or URL must be provided"
             )
         
+        # Build summary configuration
+        from ..models.schema import GlobalSummaryConfig, SectionSummarySpec
+        
+        # Create default spec
+        default_spec = SectionSummarySpec(
+            target_bullets=default_target_bullets,
+            max_words_per_bullet=default_max_words,
+            emphasize_first_words=default_emphasize_words,
+            include_keyphrases=include_keyphrases
+        )
+        
+        # Create per-section overrides
+        per_section = {}
+        if methods_numbered:
+            per_section["METHODS"] = SectionSummarySpec(
+                target_bullets=default_target_bullets,
+                max_words_per_bullet=default_max_words,
+                list_type="numbered",
+                emphasize_first_words=default_emphasize_words,
+                include_keyphrases=include_keyphrases
+            )
+        
+        summary_cfg = GlobalSummaryConfig(
+            default=default_spec,
+            per_section=per_section,
+            abstractive=abstractive,
+            abstractive_model_name=abstractive_model_name,
+            diversity_lambda=diversity_lambda,
+            coverage_weight=coverage_weight,
+            max_section_sentences=max_section_sentences
+        )
+        
+        # Build paging configuration
+        from ..models.schema import PagingConfig, DeckTargets
+        paging_cfg = PagingConfig(
+            bullets_per_slide=bullets_per_slide,
+            min_slides_per_section=min_slides_per_section,
+            max_slides_per_section=max_slides_per_section
+        )
+        deck_targets = DeckTargets(
+            target_slide_count=target_slide_count,
+            allow_supplementary_sections=allow_supplementary_sections
+        )
+        
+        # Build planner configuration
+        from ..models.schema import SlidePlannerConfig
+        planner_cfg = SlidePlannerConfig(
+            target_total_slides=planner_target_slides,
+            max_supplementary_slides=planner_max_supplementary,
+            min_slides_per_section=planner_min_per_section,
+            max_slides_per_section=planner_max_per_section,
+            bullets_per_slide=planner_bullets_per_slide
+        )
+        
         # Process request
         if pdf_file:
             response = await _process_pdf_upload(
-                pdf_file, theme, max_bullets, logger, doc_type, title_override, target_slide_count
+                pdf_file, theme, max_bullets, logger, doc_type, title_override, 
+                target_slide_count, summary_cfg, paging_cfg, deck_targets, planner_cfg
             )
         else:
             response = await _process_doi_url(
-                doi, url, theme, max_bullets, logger, doc_type, title_override, target_slide_count
+                doi, url, theme, max_bullets, logger, doc_type, title_override, 
+                target_slide_count, summary_cfg, paging_cfg, deck_targets, planner_cfg
             )
         
         # Log performance
@@ -117,7 +195,11 @@ async def _process_pdf_upload(
     logger,
     doc_type: str,
     title_override: Optional[str],
-    target_slide_count: int
+    target_slide_count: int,
+    summary_cfg: GlobalSummaryConfig,
+    paging_cfg: PagingConfig,
+    deck_targets: DeckTargets,
+    planner_cfg: SlidePlannerConfig
 ) -> GenerateResponse:
     """Process PDF file upload."""
     # Validate file
@@ -140,14 +222,8 @@ async def _process_pdf_upload(
     # Extract text
     text = extract_text_from_pdf(str(file_path))
     
-    # Extract sections
-    sections = split_into_sections(text)
-    
     # Extract metadata
     metadata = _extract_metadata_from_text(text)
-    
-    # Summarize sections
-    summarized_sections = await _summarize_sections(sections, max_bullets, logger)
     
     # Create generation parameters
     from ..models.schema import GenerationParams, DocumentType
@@ -162,11 +238,28 @@ async def _process_pdf_upload(
         target_slide_count=target_slide_count
     )
     
-    # Generate PowerPoint
+    # Generate PowerPoint using new AI summarization
     output_path = get_output_path("presentation.pptx")
-    pptx_path, slide_count = build_presentation(
-        metadata, summarized_sections, theme, str(output_path), params
+    from app.services.ppt.builder import build_deck_from_text
+    from app.models.schema import LayoutConfig
+    
+    layout = LayoutConfig()
+    prs = build_deck_from_text(
+        raw_text=text,
+        meta_title=metadata.title,
+        user_title=title_override,
+        params=params,
+        layout=layout,
+        summary_cfg=summary_cfg,
+        paging_cfg=paging_cfg,
+        deck_targets=deck_targets,
+        planner_cfg=planner_cfg
     )
+    
+    # Save presentation
+    prs.save(str(output_path))
+    pptx_path = str(output_path)
+    slide_count = len(prs.slides)
     
     # Generate file ID
     file_id = output_path.stem
@@ -187,7 +280,11 @@ async def _process_doi_url(
     logger,
     doc_type: str,
     title_override: Optional[str],
-    target_slide_count: int
+    target_slide_count: int,
+    summary_cfg: GlobalSummaryConfig,
+    paging_cfg: PagingConfig,
+    deck_targets: DeckTargets,
+    planner_cfg: SlidePlannerConfig
 ) -> GenerateResponse:
     """Process DOI or URL request."""
     # TODO: Implement DOI/URL processing

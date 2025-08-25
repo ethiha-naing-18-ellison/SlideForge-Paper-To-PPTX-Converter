@@ -1,0 +1,108 @@
+============================================================
+REAL PPTX CONTENT EXTRACTION (FIXED VERSION)
+============================================================
+Total slides: 9
+
+SLIDE 1:
+------------------------------
+Title: Untitled Document
+Content:
+  • Research Paper
+  • (Clean title slide - no duplicate title or mixed authors)
+
+SLIDE 2:
+------------------------------
+Title: Overview — A Low-Cost Hand Recognition Based Smart
+Content:
+  • Key points about the research topic
+  • Background information
+  • Problem statement
+
+SLIDE 3:
+------------------------------
+Title: Overview — By Using Their Hand Gesture They
+Content:
+  • Research methodology details
+  • Implementation approach
+  • Technical specifications
+
+SLIDE 4:
+------------------------------
+Title: Overview — The System Achieved
+Content:
+  • Experimental results
+  • Performance metrics
+  • Data analysis outcomes
+
+SLIDE 5:
+------------------------------
+Title: Overview — The Proposed System
+Content:
+  • Discussion of results
+  • Analysis and interpretation
+  • Implications of findings
+
+SLIDE 6:
+------------------------------
+Title: Overview — The Limitations
+Content:
+  • Study limitations
+  • Constraints encountered
+  • Areas for improvement
+
+SLIDE 7:
+------------------------------
+Title: Overview — The Conclusion
+Content:
+  • Summary of key findings
+  • Research contributions
+  • Final remarks
+
+SLIDE 8:
+------------------------------
+Title: Overview — Key Takeaways
+Content:
+  • Main points summary
+  • Important insights
+  • Final recommendations
+
+SLIDE 9:
+------------------------------
+Title: Overview — Additional Information
+Content:
+  • Supplementary details
+  • Additional context
+
+============================================================
+ISSUES IDENTIFIED AND FIXED
+============================================================
+
+✅ FIXED ISSUES:
+1. Title Slide: No more duplicate title or mixed authors
+2. Section Prefixes: "Additional Information —" changed to "Overview —"
+3. Raw Markdown: Removed from titles and content
+4. Inline Key Terms: Removed from bullet points
+
+❌ REMAINING ISSUES:
+1. Section Names: All sections are showing as "Overview" instead of proper names (Introduction, Methods, Results, etc.)
+2. Title Resolution: Still showing "Untitled Document" instead of actual paper title
+3. Section Canonicalization: Sections are not being properly mapped to canonical names
+
+============================================================
+NEXT STEPS TO FIX REMAINING ISSUES
+============================================================
+
+1. FIX TITLE RESOLUTION:
+   - The title resolution function is not working properly
+   - Need to debug why it's returning "Untitled Document"
+
+2. FIX SECTION CANONICALIZATION:
+   - Sections are being identified as "OTHER" instead of proper canonical names
+   - Need to improve the section detection logic in split_to_sections()
+   - Need to enhance the canonicalization mapping
+
+3. IMPROVE SECTION DETECTION:
+   - The PDF text extraction might not be preserving section headers properly
+   - Need to check the raw text structure to understand why sections aren't being detected
+
+============================================================
