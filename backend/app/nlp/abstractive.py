@@ -1,10 +1,11 @@
 from __future__ import annotations
 from typing import List
 
-def compress_sentence_simple(text: str, max_words: int = 18) -> str:
+def compress_sentence_simple(text: str, max_words: int = 35) -> str:
     words = text.split()
     if len(words) <= max_words: return text.strip()
-    return " ".join(words[:max_words-1]) + "…"
+    # Return complete words without ellipsis
+    return " ".join(words[:max_words])
 
 def abstractive_summarize(sentences: List[str], model_name: str | None, max_words: int) -> List[str]:
     """

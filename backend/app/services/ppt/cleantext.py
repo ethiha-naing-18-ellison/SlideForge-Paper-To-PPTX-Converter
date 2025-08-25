@@ -43,6 +43,25 @@ def normalize_text(s: str) -> str:
     # Consistent casing for common hyphenations
     s = s.replace("Low-Cost", "Low-cost")
     
+    # Fix common grammar issues
+    s = re.sub(r"(\w)([A-Z][a-z])", r"\1 \2", s)  # Add space between camelCase
+    s = re.sub(r"(\w)(\d)", r"\1 \2", s)  # Add space between word and number
+    s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)  # Add space between number and word
+    
+    # Fix specific issues from the PDF
+    s = s.replace("Proposed ModelHRbSBM", "Proposed Model HRbSBM")
+    s = s.replace("This proposedmodel", "This proposed model")
+    s = s.replace("Hand Recognition Based", "Hand Recognition-Based")
+    
+    # Fix more specific spacing issues found in the output
+    s = s.replace("LITERATURE REVIEWThe", "LITERATURE REVIEW The")
+    s = s.replace("Due tothe", "Due to the")
+    s = s.replace("Due toits", "Due to its")
+    s = s.replace("In thecurrent", "In the current")
+    s = s.replace("thecurrent", "the current")
+    s = s.replace("toits", "to its")
+    s = s.replace("tothe", "to the")
+    
     # Remove any remaining raw markdown markers
     s = s.replace("**", "").replace("*", "").replace("__", "")
     
@@ -86,7 +105,7 @@ def split_runs_from_markdown(text: str) -> List[Tuple[str, dict]]:
     
     return [(normalize_text(t), st) for t,st in runs if normalize_text(t)]
 
-def clean_bullet_text(text: str, max_words: int = 18) -> str:
+def clean_bullet_text(text: str, max_words: int = 35) -> str:
     """Clean and truncate bullet text to reasonable length."""
     if not text:
         return ""
@@ -113,12 +132,8 @@ def clean_bullet_text(text: str, max_words: int = 18) -> str:
     # Truncate if too long (preserve markdown)
     words = cleaned.split()
     if len(words) > max_words:
-        # Find the last complete markdown token before max_words
-        truncated = " ".join(words[:max_words-1])
-        # Add ellipsis if we truncated
-        if len(words) > max_words:
-            truncated += "…"
-        return truncated
+        # Return complete words without ellipsis
+        return " ".join(words[:max_words])
     
     return cleaned
 

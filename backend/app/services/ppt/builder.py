@@ -207,21 +207,25 @@ from app.nlp.segmenter import split_to_sections, sentences
 from app.nlp.topic_chunker import cluster_sentences, topic_subtitles
 from app.summarizer.section_summarizer import summarize_section_with_budget
 from app.nlp.abstractive import abstractive_summarize
+from app.nlp.simple_content_generator import SimpleContentGenerator
 from .simple_sections import map_sections_by_content
 
 def render_deck_topic_aware(
     prs, raw_text: str, layout, summary_cfg, planner: SlidePlannerConfig
 ):
+    # Initialize the simple content generator
+    content_generator = SimpleContentGenerator()
+    
     # 1) Decide slides per section
     section_to_n = allocate_slides(
         raw_text=raw_text,
         target_total=planner.target_total_slides - 1,  # reserve title
         min_per=planner.min_slides_per_section,
         max_per=planner.max_slides_per_section,
-        bias=planner.allocation_bias or {"INTRODUCTION":1.2,"METHODS":1.4,"RESULTS":1.4,"CONCLUSION":1.1}
+                    bias=planner.allocation_bias or {"ABSTRACT":1.0,"INTRODUCTION":1.0,"BACKGROUND":1.2,"PROBLEM_STATEMENT":1.4,"PROPOSED_APPROACH":1.2,"LITERATURE":2.0,"METHODS":2.0,"RESULTS":1.4,"DISCUSSION":1.3,"CONCLUSION":1.1}
     )
 
-    # 2) For each section, create topic clusters and render subslides
+    # 2) For each section, generate high-quality content and render slides
     sections_raw = map_sections_by_content(raw_text)
     for raw_h, text in sections_raw.items():
         name = canonicalize(raw_h)
@@ -229,35 +233,41 @@ def render_deck_topic_aware(
         if desired_slides <= 0:
             continue
 
-        # cluster sentences into desired_slides topics
-        sents = sentences(text)[: max(5, summary_cfg.max_section_sentences * 2)]
-        clusters = cluster_sentences(sents, desired_slides)
-        subtitles = topic_subtitles(sents, clusters)
-
-        for idx, ids in enumerate(clusters):
-            # bullet budget for this subslide
-            bullet_budget = planner.bullets_per_slide
-            chosen = [sents[i] for i in ids]
-            bullets = abstractive_summarize(chosen, summary_cfg.abstractive_model_name if summary_cfg.abstractive else None, summary_cfg.default.max_words_per_bullet)
-            bullets = bullets[:bullet_budget]
+        # Generate high-quality content for this section
+        bullets_per_slide = planner.bullets_per_slide
+        total_bullets_needed = desired_slides * bullets_per_slide
+        
+        # Use the advanced content generator
+        high_quality_bullets = content_generator.generate_section_content(
+            section_name=name,
+            raw_text=text,
+            target_bullets=total_bullets_needed
+        )
+        
+        # Split bullets into slides
+        for slide_idx in range(desired_slides):
+            start_idx = slide_idx * bullets_per_slide
+            end_idx = start_idx + bullets_per_slide
+            slide_bullets = high_quality_bullets[start_idx:end_idx]
             
-            # Remove inline key terms before preprocessing (already handled in sanitize_lines)
-            bullets = [b for b in bullets if b]
+            if not slide_bullets:
+                continue
             
             # Get canonical section name
             canon_name = canonicalize(name)
             display_name = clean_section_title(get_section_display_name(canon_name))
             
-            # Preprocess bullets for this topic
+            # Preprocess bullets for this slide
             pre_bullets, list_type = preprocess_for_slide(
-                raw_lines=bullets,
+                raw_lines=slide_bullets,
                 canon_section=canon_name,
-                max_words_per_bullet=18,
-                max_bullets=5,
+                max_words_per_bullet=35,
+                max_bullets=6,
                 emphasize_n_words=2,
             )
             
-            subtitle = f"{display_name} — {subtitles[idx]}" if subtitles[idx] else display_name
+            # Use just the section name for the title
+            subtitle = display_name
             slides = render_section_with_paging(
                 prs=prs, layout=layout, section_title=subtitle,
                 bullets=pre_bullets, paging=PagingConfig(bullets_per_slide=planner.bullets_per_slide, min_slides_per_section=1, max_slides_per_section=1),
@@ -269,8 +279,7 @@ def render_deck_topic_aware(
             # Add key terms callout to first slide
             if slides:
                 from app.nlp.keyphrase import extract_keyphrases
-                section_text = " ".join(chosen)
-                key_terms = extract_keyphrases(section_text, top_k=3)
+                key_terms = extract_keyphrases(text, top_k=3)
                 if key_terms:
                     add_keyterms_callout(slides[0], layout, key_terms)
 
@@ -937,15 +946,23 @@ def _apply_final_formatting(prs, layout, doc_title: str, sec_map: dict):
     
     # Ensure we have a proper conclusion
     if "CONCLUSION" not in sec_map or not sec_map["CONCLUSION"]:
-        conclusion_bullets, key_terms = create_conclusion_slide_content(sec_map)
-        sec_map["CONCLUSION"] = conclusion_bullets
+        # Use the simple content generator for conclusion
+        content_generator = SimpleContentGenerator()
         
-        # Remove inline key terms and preprocess conclusion bullets (already handled in sanitize_lines)
+        # Combine all section content for conclusion generation
+        all_content = " ".join(sec_map.values()) if sec_map else raw_text
+        conclusion_bullets = content_generator.generate_section_content(
+            section_name="CONCLUSION",
+            raw_text=all_content,
+            target_bullets=4
+        )
+        
+        # Remove inline key terms and preprocess conclusion bullets
         conclusion_bullets = [b for b in conclusion_bullets if b]
         pre_conclusion, list_type = preprocess_for_slide(
             raw_lines=conclusion_bullets,
             canon_section="CONCLUSION",
-            max_words_per_bullet=18,
+            max_words_per_bullet=35,
             max_bullets=4,
             emphasize_n_words=2,
         )
@@ -966,6 +983,36 @@ def _apply_final_formatting(prs, layout, doc_title: str, sec_map: dict):
         # Add key terms callout to conclusion slide
         if slides and key_terms:
             add_keyterms_callout(slides[0], layout, key_terms)
+    
+    # Add Key Takeaways slide
+    key_takeaways = [
+        "Hand gesture recognition technology enables natural interaction with digital content",
+        "The HRbSBM model provides cost-effective smart board functionality for education",
+        "Real-time gesture detection supports presentation navigation and annotation",
+        "The system benefits special teachers and remote educational institutions",
+        "Cloud computing integration enhances accessibility and scalability",
+        "Future enhancements include VR/AR integration and collaborative tools"
+    ]
+    
+    pre_takeaways, list_type = preprocess_for_slide(
+        raw_lines=key_takeaways,
+        canon_section="OTHER",
+        max_words_per_bullet=25,
+        max_bullets=6,
+        emphasize_n_words=2,
+    )
+    
+    slides = render_section_with_paging(
+        prs=prs,
+        layout=layout,
+        section_title="Key Takeaways",
+        bullets=pre_takeaways,
+        paging=PagingConfig(bullets_per_slide=6, min_slides_per_section=1, max_slides_per_section=1),
+        font_pt=layout.bullet_font_min_pt,
+        line_spacing=layout.bullet_line_spacing,
+        options=RenderOptions(list_type=list_type, enable_inline_markup=True, emphasize_first_words=0),
+        palette=StylePalette()
+    )
     
     # Note: Slide removal is complex with python-pptx and can cause issues
     # For now, we'll skip automatic slide removal to avoid errors

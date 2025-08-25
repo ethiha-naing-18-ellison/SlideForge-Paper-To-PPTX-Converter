@@ -3,7 +3,12 @@ import re
 from typing import Dict, Tuple
 
 CANON_MAP = {
-    "INTRODUCTION": ("INTRODUCTION", "BACKGROUND", "OVERVIEW", "MOTIVATION"),
+    "ABSTRACT": ("ABSTRACT", "SUMMARY"),
+    "INTRODUCTION": ("INTRODUCTION", "OVERVIEW", "MOTIVATION"),
+    "BACKGROUND": ("BACKGROUND", "CONTEXT", "CURRENT STATE"),
+    "PROBLEM_STATEMENT": ("PROBLEM STATEMENT", "PROBLEM", "ISSUE", "CHALLENGE", "RESEARCH OBJECTIVES", "OBJECTIVES", "GOALS", "AIMS", "PURPOSE"),
+    "PROPOSED_APPROACH": ("PROPOSED APPROACH", "APPROACH", "SOLUTION", "METHODOLOGY"),
+    "LITERATURE": ("LITERATURE", "LITERATURE REVIEW", "RELATED WORK", "BACKGROUND"),
     "METHODS": ("METHOD", "METHODS", "METHODOLOGY", "PROCEDURE", "EXPERIMENTS", "MATERIALS AND METHODS"),
     "RESULTS": ("RESULT", "RESULTS", "FINDINGS", "EVALUATION"),
     "DISCUSSION": ("DISCUSSION", "ANALYSIS", "INSIGHTS"),
@@ -27,7 +32,7 @@ def canonicalize(name: str) -> str:
     
     # Handle special cases
     if "ABSTRACT" in n or "SUMMARY" in n:
-        return "INTRODUCTION"
+        return "ABSTRACT"
     
     # Handle REFERENCES/BIBLIOGRAPHY
     if "REFERENCES" in n or "BIBLIOGRAPHY" in n:
@@ -53,9 +58,14 @@ def cont_title(base: str, idx: int) -> str:
 def get_section_display_name(canon_name: str) -> str:
     """Get the proper display name for a canonical section."""
     display_names = {
+        "ABSTRACT": "Abstract",
         "INTRODUCTION": "Introduction",
+        "BACKGROUND": "Background",
+        "PROBLEM_STATEMENT": "Problem Statement & Objectives",
+        "PROPOSED_APPROACH": "Proposed Approach",
+        "LITERATURE": "Literature Review",
         "METHODS": "Methods",
-        "RESULTS": "Results", 
+        "RESULTS": "Results",
         "DISCUSSION": "Discussion",
         "LIMITATIONS": "Limitations",
         "CONCLUSION": "Conclusion",

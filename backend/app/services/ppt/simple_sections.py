@@ -9,14 +9,17 @@ def map_sections_by_content(text: str) -> dict:
     
     # Define section keywords and their canonical names
     section_keywords = {
-        "INTRODUCTION": ["1. INTRODUCTION", "INTRODUCTION"],
-        "METHODS": ["3. METHODOLOGY", "METHODOLOGY"],
-        "RESULTS": ["4. RESULTS", "RESULTS", "4. RESULTS & ANALYSIS"],
-        "DISCUSSION": ["DISCUSSION", "ANALYSIS"],
-        "CONCLUSION": ["5. CONCLUSION", "CONCLUSION"],
-        "LITERATURE": ["2. LITERATURE REVIEW", "LITERATURE REVIEW"],
-        "ABSTRACT": ["ABSTRACT", "ABSTRACT:"]
-    }
+    "ABSTRACT": ["ABSTRACT:", "ABSTRACT"],
+    "INTRODUCTION": ["1. INTRODUCTION", "INTRODUCTION"],
+    "BACKGROUND": ["BACKGROUND", "CONTEXT", "CURRENT STATE"],
+    "PROBLEM_STATEMENT": ["PROBLEM STATEMENT", "PROBLEM", "ISSUE", "RESEARCH OBJECTIVES", "OBJECTIVES", "GOALS", "AIMS"],
+    "PROPOSED_APPROACH": ["PROPOSED APPROACH", "APPROACH", "SOLUTION"],
+    "LITERATURE": ["2. LITERATURE REVIEW", "LITERATURE REVIEW"],
+    "METHODS": ["3. METHODOLOGY", "METHODOLOGY"],
+    "RESULTS": ["4. RESULTS & ANALYSIS", "4. RESULTS", "RESULTS"],
+    "DISCUSSION": ["DISCUSSION", "ANALYSIS"],
+    "CONCLUSION": ["5. CONCLUSION", "CONCLUSION"]
+}
     
     # Find all section positions
     section_positions = []

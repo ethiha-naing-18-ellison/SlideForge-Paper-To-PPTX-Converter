@@ -5,8 +5,8 @@ from typing import Iterable, List, Tuple
 from .labels import strip_label_prefix
 from .cleantext import normalize_text
 
-MAX_WORDS_PER_BULLET_DEFAULT = 18
-MAX_BULLETS_PER_SLIDE_DEFAULT = 5
+MAX_WORDS_PER_BULLET_DEFAULT = 35
+MAX_BULLETS_PER_SLIDE_DEFAULT = 6
 
 # Light sentence split (avoid breaking on abbreviations)
 _SENT_SPLIT = re.compile(
@@ -32,7 +32,8 @@ def truncate_words(text: str, max_words: int) -> str:
     words = text.strip().split()
     if len(words) <= max_words:
         return text.strip()
-    return " ".join(words[:max_words]) + "…"
+    # Don't add ellipsis, just return the complete words that fit
+    return " ".join(words[:max_words])
 
 def split_into_sentences(text: str) -> List[str]:
     text = normalize_whitespace(text)
