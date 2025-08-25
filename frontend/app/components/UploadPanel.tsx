@@ -89,26 +89,26 @@ export default function UploadPanel({
   }
 
   return (
-    <div className="card max-w-2xl mx-auto">
+    <div className="bg-neutral-900/50 border border-neutral-800 rounded-xl p-6 max-w-2xl mx-auto">
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">
+        <h2 className="text-2xl font-bold text-neutral-100 mb-2">
           Convert Research Paper to PowerPoint
         </h2>
-        <p className="text-gray-600">
+        <p className="text-neutral-300">
           Upload a PDF or provide a DOI/URL to generate a professional presentation
         </p>
       </div>
 
       {/* Upload Method Tabs */}
-      <div className="flex space-x-1 mb-6 bg-gray-100 p-1 rounded-lg">
+      <div className="flex space-x-1 mb-6 bg-neutral-800 p-1 rounded-lg">
         <button
           type="button"
           onClick={() => setUploadMethod('file')}
           className={cn(
             'flex items-center space-x-2 px-4 py-2 rounded-md text-sm font-medium transition-colors',
             uploadMethod === 'file'
-              ? 'bg-white text-primary-600 shadow-sm'
-              : 'text-gray-600 hover:text-gray-900'
+              ? 'bg-neutral-700 text-indigo-400 shadow-sm'
+              : 'text-neutral-400 hover:text-neutral-200'
           )}
         >
           <Upload className="w-4 h-4" />
@@ -120,8 +120,8 @@ export default function UploadPanel({
           className={cn(
             'flex items-center space-x-2 px-4 py-2 rounded-md text-sm font-medium transition-colors',
             uploadMethod === 'doi'
-              ? 'bg-white text-primary-600 shadow-sm'
-              : 'text-gray-600 hover:text-gray-900'
+              ? 'bg-neutral-700 text-indigo-400 shadow-sm'
+              : 'text-neutral-400 hover:text-neutral-200'
           )}
         >
           <FileText className="w-4 h-4" />
@@ -133,8 +133,8 @@ export default function UploadPanel({
           className={cn(
             'flex items-center space-x-2 px-4 py-2 rounded-md text-sm font-medium transition-colors',
             uploadMethod === 'url'
-              ? 'bg-white text-primary-600 shadow-sm'
-              : 'text-gray-600 hover:text-gray-900'
+              ? 'bg-neutral-700 text-indigo-400 shadow-sm'
+              : 'text-neutral-400 hover:text-neutral-200'
           )}
         >
           <Link className="w-4 h-4" />
@@ -146,16 +146,16 @@ export default function UploadPanel({
         {/* File Upload */}
         {uploadMethod === 'file' && (
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-neutral-200 mb-2">
               Upload PDF File
             </label>
             <div
               className={cn(
                 'border-2 border-dashed rounded-lg p-6 text-center transition-colors',
                 dragActive
-                  ? 'border-primary-400 bg-primary-50'
-                  : 'border-gray-300 hover:border-gray-400',
-                selectedFile && 'border-green-400 bg-green-50'
+                  ? 'border-indigo-400 bg-indigo-900/20'
+                  : 'border-neutral-600 hover:border-neutral-500',
+                selectedFile && 'border-green-400 bg-green-900/20'
               )}
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
@@ -172,25 +172,25 @@ export default function UploadPanel({
               
               {selectedFile ? (
                 <div className="flex items-center justify-center space-x-2">
-                  <CheckCircle className="w-5 h-5 text-green-500" />
-                  <span className="text-sm text-gray-600">
+                  <CheckCircle className="w-5 h-5 text-green-400" />
+                  <span className="text-sm text-neutral-300">
                     {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
                   </span>
                 </div>
               ) : (
                 <div>
-                  <Upload className="mx-auto h-12 w-12 text-gray-400" />
-                  <p className="mt-2 text-sm text-gray-600">
+                  <Upload className="mx-auto h-12 w-12 text-neutral-400" />
+                  <p className="mt-2 text-sm text-neutral-300">
                     Drag and drop a PDF file here, or{' '}
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
-                      className="text-primary-600 hover:text-primary-500 font-medium"
+                      className="text-indigo-400 hover:text-indigo-300 font-medium"
                     >
                       browse
                     </button>
                   </p>
-                  <p className="text-xs text-gray-500 mt-1">
+                  <p className="text-xs text-neutral-400 mt-1">
                     Maximum file size: 50MB
                   </p>
                 </div>
@@ -202,7 +202,7 @@ export default function UploadPanel({
         {/* DOI Input */}
         {uploadMethod === 'doi' && (
           <div>
-            <label htmlFor="doi" className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="doi" className="block text-sm font-medium text-neutral-200 mb-2">
               DOI Identifier
             </label>
             <input
@@ -210,10 +210,10 @@ export default function UploadPanel({
               type="text"
               id="doi"
               placeholder="e.g., 10.1038/nature12373"
-              className="input"
+              className="w-full px-3 py-2 border border-neutral-600 rounded-lg bg-neutral-800 text-neutral-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder-neutral-400"
             />
             {errors.doi && (
-              <p className="mt-1 text-sm text-red-600 flex items-center">
+              <p className="mt-1 text-sm text-red-400 flex items-center">
                 <AlertCircle className="w-4 h-4 mr-1" />
                 {errors.doi.message}
               </p>
@@ -224,7 +224,7 @@ export default function UploadPanel({
         {/* URL Input */}
         {uploadMethod === 'url' && (
           <div>
-            <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="url" className="block text-sm font-medium text-neutral-200 mb-2">
               Paper URL
             </label>
             <input
@@ -238,10 +238,10 @@ export default function UploadPanel({
               type="url"
               id="url"
               placeholder="https://example.com/paper"
-              className="input"
+              className="w-full px-3 py-2 border border-neutral-600 rounded-lg bg-neutral-800 text-neutral-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder-neutral-400"
             />
             {errors.url && (
-              <p className="mt-1 text-sm text-red-600 flex items-center">
+              <p className="mt-1 text-sm text-red-400 flex items-center">
                 <AlertCircle className="w-4 h-4 mr-1" />
                 {errors.url.message}
               </p>
@@ -251,13 +251,13 @@ export default function UploadPanel({
 
         {/* Theme Selection */}
         <div>
-          <label htmlFor="theme" className="block text-sm font-medium text-gray-700 mb-2">
+          <label htmlFor="theme" className="block text-sm font-medium text-neutral-200 mb-2">
             Presentation Theme
           </label>
           <select
             {...register('theme')}
             id="theme"
-            className="input"
+            className="w-full px-3 py-2 border border-neutral-600 rounded-lg bg-neutral-800 text-neutral-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
           >
             <option value="academic">Academic</option>
             <option value="minimal">Minimal</option>
@@ -267,7 +267,7 @@ export default function UploadPanel({
 
         {/* Max Bullets */}
         <div>
-          <label htmlFor="maxBullets" className="block text-sm font-medium text-gray-700 mb-2">
+          <label htmlFor="maxBullets" className="block text-sm font-medium text-neutral-200 mb-2">
             Maximum Bullets per Section
           </label>
           <input
@@ -279,10 +279,10 @@ export default function UploadPanel({
             id="maxBullets"
             min="1"
             max="10"
-            className="input"
+            className="w-full px-3 py-2 border border-neutral-600 rounded-lg bg-neutral-800 text-neutral-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
           />
           {errors.maxBullets && (
-            <p className="mt-1 text-sm text-red-600 flex items-center">
+            <p className="mt-1 text-sm text-red-400 flex items-center">
               <AlertCircle className="w-4 h-4 mr-1" />
               {errors.maxBullets.message}
             </p>
@@ -293,7 +293,7 @@ export default function UploadPanel({
         <button
           type="submit"
           disabled={isLoading || (uploadMethod === 'file' && !selectedFile)}
-          className="w-full btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full px-4 py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-neutral-950 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isLoading ? (
             <div className="flex items-center justify-center space-x-2">
